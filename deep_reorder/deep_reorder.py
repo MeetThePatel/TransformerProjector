@@ -8,7 +8,8 @@ from typing import List, Optional
 import safetensors
 import torch
 from torch import nn
-from transformers import PreTrainedModel
+from torch.utils.data import DataLoader
+from transformers import PreTrainedModel, AutoModelForCausalLM
 
 
 class ProjectionInitialization(Enum):
@@ -63,13 +64,17 @@ class DeepReorderModelParams:
 class DeepReorderModel:
     """DeepReorder model."""
 
-    def __init__(self, model: PreTrainedModel, params: DeepReorderModelParams):
+    def __init__(self, model: str, params: DeepReorderModelParams):
         """Initialize the DeepReorder model."""
-        self.model = model
+        self.hf_model: PreTrainedModel = AutoModelForCausalLM.from_pretrained(model, torch_dtype="bfloat16", device_map="auto")
+        # Freeze all weights from the HuggingFace model. We are only interested in training/loading weights of neuron_projections.
+        self.freeze()
+
         self.params = params
         if self.params.hidden_dim is None:
-            self.params.hidden_dim = self.model.config.hidden_size
+            self.params.hidden_dim = self.hf_model.config.hidden_size
 
+        # Register necessary buffers/parameters on components.
         for component in self.params.component_list:
             self.register_buffers(component)
             self.register_parameters(component)
@@ -81,14 +86,28 @@ class DeepReorderModel:
             model_state_path (str):
                 path to trained model state SafeTensors file.
         """
-        state_dict = self.model.state_dict()
+        state_dict = self.hf_model.state_dict()
 
         with safetensors.safe_open(model_state_path, framework="pt") as f:
             for k in f.keys():
                 if "neuron_projection" in k:
                     target_key = "model." + k[k.find("layers") :]
+                    if target_key not in state_dict:
+                        raise KeyError(f"Key {target_key} not found in model state dict.")
                     tensor = f.get_tensor(k)
                     state_dict[target_key].copy_(tensor)
+
+    def freeze(self):
+        """Freeze the state of the model.
+
+        This operation should be done in the following scenarios:
+        - immediately after loading weights.
+        - immediately before training.
+        - immediately after training.
+        """
+        self.hf_model.model.eval()
+        for param in self.hf_model.parameters():
+            param.requires_grad = False
 
     def register_parameters(self, component: str):
         """Register neuron projection parameters in the model.
@@ -97,7 +116,7 @@ class DeepReorderModel:
             component (str):
                 component to add parameters to.
         """
-        for layer in self.model.model.layers:
+        for layer in self.hf_model.model.layers:
             self._register_neuron_projections_parameter(layer.__getattr__(component))
 
     def register_buffers(self, component: str):
@@ -107,7 +126,7 @@ class DeepReorderModel:
             component (str):
                 component to add buffer to.
         """
-        for layer in self.model.model.layers:
+        for layer in self.hf_model.model.layers:
             self._register_correlation_matrix_buffer(layer.__getattr__(component))
 
     def register_hooks(self, component: str):
@@ -133,13 +152,21 @@ class DeepReorderModel:
             """
             if isinstance(output_tensor, torch.Tensor):
                 module.correlation_matrix = torch.vmap(torch.corrcoef)(output_tensor.transpose(1, 2)).mean(dim=0)
-            elif isinstance(output_tensor, list):
+            elif isinstance(output_tensor, tuple):
                 module.correlation_matrix = torch.vmap(torch.corrcoef)(output_tensor[0].transpose(1, 2))
             else:
-                raise TypeError("Unknown output tensor type. Expected torch.Tensor or List[torch.Tensor].")
+                raise TypeError(f"Unknown output tensor type: {type(output_tensor)}. Expected torch.Tensor or Tuple[torch.Tensor].")
 
-        for layer in self.model.model.layers:
-            layer.__getattr__(component).register_forward_hook(_correlation_calculation_hook)
+        hooks = []
+        for layer in self.hf_model.model.layers:
+            hook = layer.__getattr__(component).register_forward_hook(_correlation_calculation_hook)
+            hooks.append(hook)
+        self.hooks = hooks
+
+    def unregister_hooks(self):
+        """Unregister correlation calculation hooks in the model."""
+        for hook in self.hooks:
+            hook.remove()
 
     def _register_neuron_projections_parameter(self, module: nn.Module):
         """Register neuron projection parameter in the model.
@@ -150,23 +177,23 @@ class DeepReorderModel:
         """
         match self.params.projection_init_scheme:
             case ProjectionInitialization.SinglePoint:
-                neuron_projection = nn.Parameter(
+                neuron_projections = nn.Parameter(
                     torch.zeros((self.params.hidden_dim, self.params.projection_dim), requires_grad=True, dtype=torch.float32),
                     requires_grad=True,
                 )
             case ProjectionInitialization.RandUniform:
-                neuron_projection = nn.Parameter(
+                neuron_projections = nn.Parameter(
                     math.sqrt(self.params.hidden_dim) * torch.rand((self.params.hidden_dim, self.params.projection_dim), requires_grad=True, dtype=torch.float32),
                     requires_grad=True,
                 )
             case ProjectionInitialization.RandNormal:
-                neuron_projection = nn.Parameter(
+                neuron_projections = nn.Parameter(
                     math.sqrt(self.params.hidden_dim) * torch.randn((self.params.hidden_dim, self.params.projection_dim), requires_grad=True, dtype=torch.float32),
                     requires_grad=True,
                 )
             case _:
                 raise ValueError("Unknown projection_initialization scheme.")
-        module.register_parameter("neuron_projection", neuron_projection)
+        module.register_parameter("neuron_projections", neuron_projections)
 
     def _register_correlation_matrix_buffer(self, module: nn.Module):
         """Register buffer for correlation matrix in the model.
@@ -228,7 +255,7 @@ class DeepReorderModel:
         Returns:
             DeepReorder loss for the module.
         """
-        distance_matrix = self._compute_distance_matrix(module.neuron_projection)
+        distance_matrix = self._compute_distance_matrix(module)
         target_distance_matrix = 1 - module.correlation_matrix
         loss = (distance_matrix - target_distance_matrix).pow(2).sum().sqrt()
         return loss
@@ -239,9 +266,9 @@ class DeepReorderModel:
         Returns:
             DeepReorder loss for the model.
         """
-        loss = torch.tensor(0.0, dtype=torch.float32, requires_grad=True, device=self.model.model.device)
-        for layer in self.model.model.layers:
+        loss = torch.tensor(0.0, dtype=torch.float32, requires_grad=True, device=self.hf_model.model.device)
+        for layer in self.hf_model.model.layers:
             for component in self.params.component_list:
                 component_loss = self._compute_module_loss(layer.__getattr__(component))
                 loss = loss + component_loss
-        return loss / (len(self.params.component_list) * len(self.model.model.layers))
+        return loss / (len(self.params.component_list) * len(self.hf_model.model.layers))

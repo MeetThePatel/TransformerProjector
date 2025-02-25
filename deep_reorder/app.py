@@ -9,6 +9,8 @@ import matplotlib.pyplot as plt
 import torch
 import numpy as np
 import matplotlib
+
+matplotlib.use("macosx")
 from matplotlib.widgets import Slider
 from transformers import AutoTokenizer
 from transformers.tokenization_utils_base import BatchEncoding
@@ -116,16 +118,15 @@ def visualize_inference(model: DeepReorderModel, tokenizer: AutoTokenizer, token
         for hook in hooks:
             hook.remove()
 
-        generated_text = tokenizer.decode(output_tokens[0], skip_special_tokens=True)
-
-        print("\n" * 10)
+        input_token_length = tokens.input_ids.shape[1]  # Length of the input tokens
+        generated_output_tokens = output_tokens[0][input_token_length:]  # Slice to get only generated tokens
+        generated_text = tokenizer.decode(generated_output_tokens, skip_special_tokens=True)
 
         for key in activations.keys():
             activations[key] = torch.cat([tensor.squeeze(0) for tensor in activations[key]], dim=0)
-            print(f"{key}: {activations[key].shape}")
 
     initial_layer, initial_token = 0, 0
-    fig = plt.figure(figsize=(16, 8))
+    fig = plt.figure(figsize=(16, 10))  # Increased figure height to accommodate text
     ax_mlp = fig.add_subplot(121, projection="3d")
     ax_mlp.set_title("MLP Projection")
     ax_self_attn = fig.add_subplot(122, projection="3d")
@@ -150,15 +151,19 @@ def visualize_inference(model: DeepReorderModel, tokenizer: AutoTokenizer, token
     ax_self_attn.set_ylim([-1.5, 1.5])
     ax_self_attn.set_zlim([-1.5, 1.5])
 
-    plt.subplots_adjust(bottom=0.25)
+    plt.subplots_adjust(bottom=0.35)  # Adjusted bottom to make more space for text and sliders
 
-    ax_layer = plt.axes([0.25, 0.2, 0.65, 0.03])
+    ax_layer = plt.axes([0.25, 0.25, 0.65, 0.03])  # Sliders moved slightly up
     ax_layer.set_zorder(10)
     layer_slider = Slider(ax=ax_layer, label="Layer", valmin=0, valmax=len(model.hf_model.model.layers) - 1, valinit=initial_layer, valstep=1, valfmt="%d")
 
-    ax_token = plt.axes([0.25, 0.1, 0.65, 0.03])
+    ax_token = plt.axes([0.25, 0.15, 0.65, 0.03])  # Token slider moved slightly up
     ax_token.set_zorder(10)
     token_slider = Slider(ax=ax_token, label="Token", valmin=0, valmax=tokens.input_ids.shape[1] - 1, valinit=initial_token, valstep=1, valfmt="%d")  # Set valmax based on input tokens
+
+    text_output_ax = plt.axes([0.05, 0.02, 0.9, 0.1])  # Axes for text output, adjust position as needed
+    text_output_ax.axis("off")  # Turn off axes for text display
+    text_output_text = text_output_ax.text(0.5, 0.5, generated_text, ha="center", va="center", wrap=True)  # Centered text
 
     def update(_):
         layer_index = int(layer_slider.val)
@@ -180,6 +185,17 @@ def visualize_inference(model: DeepReorderModel, tokenizer: AutoTokenizer, token
         self_attn_colors = plt.cm.coolwarm(self_attn_activation_values)
         scatter_self_attn.set_sizes(self_attn_sizes)
         scatter_self_attn.set_facecolors(self_attn_colors)
+
+        tokenized_text = tokenizer.tokenize(generated_text)
+        formatted_text_parts = []
+        for i, token in enumerate(tokenized_text):
+            if i == token_index:
+                formatted_text_parts.append(r"$\bf{" + token + "}$")  # Use LaTeX bold
+            else:
+                formatted_text_parts.append(token)
+        formatted_text = " ".join(formatted_text_parts)
+
+        text_output_text.set_text(formatted_text)
 
         fig.canvas.draw_idle()
 

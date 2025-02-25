@@ -49,7 +49,7 @@ def train(model_name: str, dataset_name: str):
     device = accelerator.device
 
     # Tensorboard and model checkpointing.
-    log_dir = f"runs/deep_reorder_{model_name}"
+    log_dir = f"runs/deep_reorder_{model_name.split('/')[-1]}"
     writer = SummaryWriter(log_dir=log_dir)
     checkpoint_dir = os.path.join(log_dir, "checkpoints")
     os.makedirs(checkpoint_dir, exist_ok=True)

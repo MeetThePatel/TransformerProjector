@@ -31,13 +31,13 @@ def main(model_name: str, dataset_name: str):
     device = accelerator.device
 
     # Tensorboard and model checkpointing.
-    log_dir = "runs/deepreorderexperimentInstruct3TESTParamsSet"
+    log_dir = "runs/TMP"
     writer = SummaryWriter(log_dir=log_dir)
     checkpoint_dir = os.path.join(log_dir, "checkpoints")
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     # Load model and freeze weights.
-    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="bfloat16", device_map="auto")
+    model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto")
     model.model.eval()
     for param in model.model.parameters():
         param.requires_grad = False

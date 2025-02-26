@@ -1,6 +1,4 @@
 # Transformer Projector
-
-Table of Contents:
   
 Hi! In this repo, I investigated projecting layers of neurons into higher dimensional spaces, and seeing the kinds of structures they form when organized by activation correlations.
 

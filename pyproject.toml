@@ -1,5 +1,5 @@
 [project]
-name = "transformer-projector"
+name = "transformer_projector"
 version = "0.1.0"
 description = "Experiment to see activation structure of transformer components."
 readme = "README.md"

@@ -1,11 +1,7 @@
-line-length = 200
+line-length = 150
 
 [lint]
-pycodestyle.max-line-length = 200
-
-select = ["D"]
-extend-select = ["D400"]
-ignore = ["D416"]
+pycodestyle.max-line-length = 150
 
 [lint.pydocstyle]
 convention = "google"

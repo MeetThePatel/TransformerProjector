@@ -1,10 +1,22 @@
 # Transformer Projector
 
+Table of Contents:
+  
 Hi! In this repo, I investigated projecting layers of neurons into higher dimensional spaces, and seeing the kinds of structures they form when organized by activation correlations.
 
 I hope you find this exploration interesting and perhaps even useful for your own work. Please take these findings with a grain of salt – I'm not an expert in this field, just a curious individual working through an interesting problem that caught my attention.
 
 If you have any questions, insights, or want to discuss this project further, feel free to reach out at [meet.s.patel.nj@gmail.com](mailto:meet.s.patel.nj@gmail.com).
+
+## Table of Contents:
+  - [Worklog](#worklog)
+    - [Initial Thoughts](#initial-thoughts)
+    - [Permutations](#permutations)
+    - [Linear Positions](#linear-positions)
+    - [Generalized Projections](#generalized-projections)
+  - [This Repo](#this-repo)
+    - [App](#app)
+  - [Future Thoughts](#future-thoughts)
 
 ## Worklog
 

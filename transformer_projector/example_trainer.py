@@ -1,4 +1,4 @@
-"""Example training script for DeepReorder wrapper model."""
+"""Example training script for TransformerProjector wrapper model."""
 
 import os
 
@@ -7,10 +7,10 @@ import torch
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from datasets import load_dataset
+from transformer_projector.transformer_projector import TransformerProjectorModel, TransformerProjectorModelParams
 from transformers import AutoTokenizer
 from rich import progress
 
-from deep_reorder import DeepReorderModel, DeepReorderModelParams
 
 MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
 DATASET_NAME = "vicgalle/alpaca-gpt4"
@@ -49,14 +49,14 @@ def train(model_name: str, dataset_name: str):
     device = accelerator.device
 
     # Tensorboard and model checkpointing.
-    log_dir = f"runs/deep_reorder_{model_name.split('/')[-1]}"
+    log_dir = f"runs/transformer_projector_{model_name.split('/')[-1]}"
     writer = SummaryWriter(log_dir=log_dir)
     checkpoint_dir = os.path.join(log_dir, "checkpoints")
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     # Load model and freeze weights.
-    model_params = DeepReorderModelParams()
-    model = DeepReorderModel(model_name, model_params)
+    model_params = TransformerProjectorModelParams()
+    model = TransformerProjectorModel(model_name, model_params)
     for component in model_params.component_list:
         model.register_hooks(component)
     model.hf_model = torch.compile(model.hf_model, backend="eager")

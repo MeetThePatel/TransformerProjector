@@ -1,7 +1,7 @@
 import sys
 import os
 from collections import defaultdict
-from typing import Dict, List, Optional, Tuple, TypedDict
+from typing import Dict, List, Optional, Tuple
 
 import accelerate
 import matplotlib
@@ -27,10 +27,9 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from transformer_projector.transformer_projector import TransformerProjectorModel, TransformerProjectorModelParams
 from transformers import AutoTokenizer
 from transformers.tokenization_utils_base import BatchEncoding
-
-from deep_reorder import DeepReorderModel, DeepReorderModelParams
 
 matplotlib.use("QtAgg")
 
@@ -610,11 +609,11 @@ class Visualizer(QMainWindow):
         )
 
     @staticmethod
-    def _register_activation_hooks(model: DeepReorderModel, activations: Dict[str, List]) -> List[torch.utils.hooks.RemovableHandle]:
+    def _register_activation_hooks(model: TransformerProjectorModel, activations: Dict[str, List]) -> List[torch.utils.hooks.RemovableHandle]:
         """Registers hooks to collect activations during a forward pass.
 
         Args:
-            model (DeepReorderModel):
+            model (TransformerProjectorModel):
                 model instance.
             activations (Dict[str, List]):
                 dictionary to store the collected activations.
@@ -698,14 +697,14 @@ class MessageConstructor:
         return batch_messages
 
 
-class DeepReorderApp(QWidget):
-    """Main application for DeepReorder visualizations."""
+class TransformerProjectorApp(QWidget):
+    """Main application for TransformerProjector visualizations."""
 
     def __init__(self):
         """Initialize the application."""
         super().__init__()
 
-        self.setWindowTitle("DeepReorder")
+        self.setWindowTitle("TransformerProjector")
         self.setGeometry(100, 100, 800, 600)
 
         self.loaded_model = None
@@ -858,7 +857,7 @@ class DeepReorderApp(QWidget):
 
     def _load_model_and_tokenizer(self, model_name: str, safetensors_path: str) -> None:
         """Load and prepare the model and tokenizer."""
-        self.loaded_model = DeepReorderModel(model_name, DeepReorderModelParams())
+        self.loaded_model = TransformerProjectorModel(model_name, TransformerProjectorModelParams())
         self.loaded_model.load_state(safetensors_path)
         self.loaded_model.freeze()
         self.loaded_model.hf_model = torch.compile(self.loaded_model.hf_model, backend="eager")
@@ -961,6 +960,6 @@ class DeepReorderApp(QWidget):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    window = DeepReorderApp()
+    window = TransformerProjectorApp()
     window.show()
     sys.exit(app.exec())

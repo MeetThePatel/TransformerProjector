@@ -1,7 +1,7 @@
 [project]
-name = "deepreorder"
+name = "transformer-projector"
 version = "0.1.0"
-description = "Add your description here"
+description = "Experiment to see activation structure of transformer components."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

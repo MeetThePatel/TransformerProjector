@@ -1,4 +1,4 @@
-"""Example visualization script for DeepReorder wrapper model."""
+"""Example visualization script for TransformerProjector wrapper model."""
 
 import math
 
@@ -6,13 +6,14 @@ import matplotlib.pyplot as plt
 import torch
 from matplotlib.widgets import Slider
 
-from deep_reorder import DeepReorderModel, DeepReorderModelParams
+from transformer_projector import TransformerProjectorModel, TransformerProjectorModelParams
+
 
 MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
 DATASET_NAME = "vicgalle/alpaca-gpt4"
 
 
-def visualize(model: DeepReorderModel):
+def visualize(model: TransformerProjectorModel):
     """Visualize a model's neuron projections."""
     initial_layer = 0
 
@@ -84,9 +85,9 @@ def visualize(model: DeepReorderModel):
 
 
 if __name__ == "__main__":
-    model = DeepReorderModel(MODEL_NAME, DeepReorderModelParams())
+    model = TransformerProjectorModel(MODEL_NAME, TransformerProjectorModelParams())
 
-    model.load_state("./runs/deepreorderexperimentInstruct3Scaled/checkpoints/step_13000/model.safetensors")
+    model.load_state("./runs/transformer_projector_experimentInstruct3Scaled/checkpoints/step_13000/model.safetensors")
     model.freeze()
 
     visualize(model)

@@ -1,4 +1,4 @@
-"""Deep Reorder is an experiment for reordering MLP blocks based on activation correlation."""
+"""TransformerProjector is an experiment for projecting transformer components using activation correlation."""
 
 import dataclasses
 import math
@@ -8,7 +8,6 @@ from typing import List, Optional
 import safetensors
 import torch
 from torch import nn
-from torch.utils.data import DataLoader
 from transformers import PreTrainedModel, AutoModelForCausalLM
 
 
@@ -29,12 +28,12 @@ class ProjectionInitialization(Enum):
 
 
 @dataclasses.dataclass
-class DeepReorderModelParams:
-    """Parameters for the DeepReorder model.
+class TransformerProjectorModelParams:
+    """Parameters for the TransformerProjector model.
 
     Attributes:
         component_list (Optional[List[str]]):
-            List of component names to apply DeepReorder to.
+            List of component names to apply TransformerProjector to.
             Defaults to ["self_attn", "mlp"].
 
         hidden_dim (Optional[int]):
@@ -61,11 +60,11 @@ class DeepReorderModelParams:
     norm_order: Optional[float] = 2.0
 
 
-class DeepReorderModel:
-    """DeepReorder model."""
+class TransformerProjectorModel:
+    """TransformerProjector model."""
 
-    def __init__(self, model: str, params: DeepReorderModelParams):
-        """Initialize the DeepReorder model."""
+    def __init__(self, model: str, params: TransformerProjectorModelParams):
+        """Initialize the TransformerProjector model."""
         self.hf_model: PreTrainedModel = AutoModelForCausalLM.from_pretrained(model, torch_dtype="bfloat16", device_map="auto")
         # Freeze all weights from the HuggingFace model. We are only interested in training/loading weights of neuron_projections.
         self.freeze()
@@ -253,7 +252,7 @@ class DeepReorderModel:
                 Defaults to 2.0 (Euclidean norm).
 
         Returns:
-            DeepReorder loss for the module.
+            TransformerProjector loss for the module.
         """
         distance_matrix = self._compute_distance_matrix(module)
         target_distance_matrix = 1 - module.correlation_matrix
@@ -261,10 +260,10 @@ class DeepReorderModel:
         return loss
 
     def _compute_model_loss(self) -> torch.Tensor:
-        """Compute the DeepReorder loss for the model.
+        """Compute the TransformerProjector loss for the model.
 
         Returns:
-            DeepReorder loss for the model.
+            TransformerProjector loss for the model.
         """
         loss = torch.tensor(0.0, dtype=torch.float32, requires_grad=True, device=self.hf_model.model.device)
         for layer in self.hf_model.model.layers:

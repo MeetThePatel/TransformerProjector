@@ -1,191 +1,320 @@
 import sys
 from collections import defaultdict
-from typing import Any, Dict, List, Tuple
-
-from PyQt6.QtWidgets import *
-from PyQt6.QtCore import Qt
+from typing import Any, Dict, List, Optional, Tuple
 
 import accelerate
-import matplotlib.pyplot as plt
-import torch
-import numpy as np
 import matplotlib
-
-matplotlib.use("QtAgg")
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
 from matplotlib.widgets import Slider
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import *
+from rich import print
 from transformers import AutoTokenizer
 from transformers.tokenization_utils_base import BatchEncoding
-from scipy.stats import zscore
 
 from deep_reorder import DeepReorderModel, DeepReorderModelParams
+
+matplotlib.use("QtAgg")
 
 MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
 DEFAULT_SYSTEM_PROMPT = "Below is an instruction that describes a task. Write a response that appropriately completes the request."
 
 
-class Visualizer:
-    """Class to handle visualization of model neuron projections."""
+class MplCanvas(FigureCanvas):
+    def __init__(
+        self,
+        mlp_values: np.array,
+        self_attn_values: np.array,
+        mlp_sizes: Optional[np.array] = None,
+        self_attn_sizes: Optional[np.array] = None,
+        mlp_colors: Optional[np.array] = None,
+        self_attn_colors: Optional[np.array] = None,
+    ):
+        self.fig = Figure()
 
-    @staticmethod
-    def visualize_model(model: DeepReorderModel) -> None:
-        """Visualize a model's neuron projections without activations."""
+        self.mlp_ax = self.fig.add_subplot(121, projection="3d")
+        self.mlp_ax.set_title("MLP Projection")
+        mlp_sizes = np.ones(len(mlp_values)) * 2 if mlp_sizes is None else mlp_sizes
+        mlp_colors = "b" if mlp_colors is None else mlp_colors
+
+        self.self_attn_ax = self.fig.add_subplot(122, projection="3d")
+        self.self_attn_ax.set_title("Self Attention Projection")
+        self_attn_sizes = np.ones(len(self_attn_values)) * 2 if self_attn_sizes is None else self_attn_sizes
+        self_attn_colors = "r" if self_attn_colors is None else self_attn_colors
+
+        super(MplCanvas, self).__init__(self.fig)
+
+        self.mlp_scatter = self.mlp_ax.scatter(mlp_values[:, 0], mlp_values[:, 1], mlp_values[:, 2], s=mlp_sizes, c=mlp_colors)
+        self.self_attn_scatter = self.self_attn_ax.scatter(self_attn_values[:, 0], self_attn_values[:, 1], self_attn_values[:, 2], s=self_attn_sizes, c=self_attn_colors)
+
+        self.fig.canvas.draw()
+
+    def update_data(
+        self,
+        mlp_values: np.array,
+        self_attn_values: np.array,
+        mlp_sizes: Optional[np.array] = None,
+        self_attn_sizes: Optional[np.array] = None,
+        mlp_colors: Optional[np.array] = None,
+        self_attn_colors: Optional[np.array] = None,
+    ):
+        mlp_sizes = np.ones(len(mlp_values)) * 2 if mlp_sizes is None else mlp_sizes
+        mlp_colors = "b" if mlp_colors is None else mlp_colors
+        self_attn_sizes = np.ones(len(self_attn_values)) * 2 if self_attn_sizes is None else self_attn_sizes
+        self_attn_colors = "r" if self_attn_colors is None else self_attn_colors
+
+        self.mlp_scatter._offsets3d = (mlp_values[:, 0], mlp_values[:, 1], mlp_values[:, 2])
+        self.mlp_scatter.set_sizes(mlp_sizes)
+        self.mlp_scatter.set_facecolors(mlp_colors)
+
+        self.self_attn_scatter._offsets3d = (self_attn_values[:, 0], self_attn_values[:, 1], self_attn_values[:, 2])
+        self.self_attn_scatter.set_sizes(self_attn_sizes)
+        self.self_attn_scatter.set_facecolors(self_attn_colors)
+
+        self.fig.canvas.draw_idle()
+
+
+class NewVisualizer(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle(f"Interactive Visualization: {MODEL_NAME}")
+        self.setGeometry(100, 100, 1500, 1200)
+
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+
+        self.layout = QVBoxLayout()
+        self.central_widget.setLayout(self.layout)
+
+    def visualize(self, mlp_projections: torch.Tensor, self_attn_projections: torch.Tensor):
+        self.is_activation_visualization = False
         initial_layer = 0
 
-        fig = plt.figure(figsize=(16, 8))
-        ax_mlp = fig.add_subplot(121, projection="3d")
-        ax_mlp.set_title("MLP Projection")
-        ax_self_attn = fig.add_subplot(122, projection="3d")
-        ax_self_attn.set_title("Self Attention Projection")
+        self.mlp_values = mlp_projections.float().cpu().numpy()
+        self.self_attn_values = self_attn_projections.float().cpu().numpy()
+        n_layers = self.mlp_values.shape[0]
 
-        # Setup initial layer visualization
-        mlp_data, scatter_mlp = Visualizer._setup_projection_plot(model.hf_model.model.layers[initial_layer].mlp.neuron_projections, ax_mlp, "blue")
-        self_attn_data, scatter_self_attn = Visualizer._setup_projection_plot(model.hf_model.model.layers[initial_layer].self_attn.neuron_projections, ax_self_attn, "red")
+        self.mpl_canvas = MplCanvas(
+            mlp_values=self._demean(self.mlp_values[initial_layer]),
+            self_attn_values=self._demean(self.self_attn_values[initial_layer]),
+        )
+        self.layout.addWidget(self.mpl_canvas)
 
-        # Set consistent limits for axes
-        Visualizer._set_axis_limits([ax_mlp, ax_self_attn])
+        self.slider_layout = QHBoxLayout()
 
-        # Add layer slider
-        plt.subplots_adjust(bottom=0.25)
-        ax_layer = plt.axes((0.25, 0.1, 0.65, 0.03))
-        ax_layer.set_zorder(10)
-        layer_slider = Slider(ax=ax_layer, label="Layer", valmin=0, valmax=len(model.hf_model.model.layers) - 1, valinit=initial_layer, valstep=1, valfmt="%d")
+        self.layer_label = QLabel("Layer: 0")
 
-        # Define update function for slider
-        def update(_):
-            layer_index = int(layer_slider.val)
+        self.layer_slider = QSlider(Qt.Orientation.Horizontal)
+        self.layer_slider.setMinimum(0)
+        self.layer_slider.setMaximum(n_layers - 1)
+        self.layer_slider.setValue(initial_layer)
+        self.layer_slider.valueChanged.connect(self._on_slider_change)
 
-            update_mlp_data = model.hf_model.model.layers[layer_index].mlp.neuron_projections.cpu().numpy()
-            update_mlp_data = update_mlp_data - update_mlp_data.mean(axis=0)
-            scatter_mlp._offsets3d = (update_mlp_data[:, 0], update_mlp_data[:, 1], update_mlp_data[:, 2])
+        self.slider_layout.addWidget(self.layer_label)
+        self.slider_layout.addWidget(self.layer_slider)
+        self.layout.addLayout(self.slider_layout)
 
-            update_self_attn_data = model.hf_model.model.layers[layer_index].self_attn.neuron_projections.cpu().numpy()
-            update_self_attn_data = update_self_attn_data - update_self_attn_data.mean(axis=0)
-            scatter_self_attn._offsets3d = (update_self_attn_data[:, 0], update_self_attn_data[:, 1], update_self_attn_data[:, 2])
-
-            fig.canvas.draw()
-
-        layer_slider.on_changed(update)
-        plt.show()
-
-    @staticmethod
-    def visualize_inference(model: DeepReorderModel, tokenizer: AutoTokenizer, tokens: BatchEncoding) -> None:
-        """Visualize model neuron projections with activation data during inference."""
-        # Move tokens to the model's device
-        tokens.to(model.hf_model.device)
-
-        activations = defaultdict(list)
-        hooks = Visualizer._register_activation_hooks(model, activations)
-
-        with torch.no_grad():
-            output_tokens = model.hf_model.generate(
-                tokens.input_ids,
-                attention_mask=tokens.attention_mask,
-                do_sample=True,
-                pad_token_id=tokenizer.pad_token_id,
-                eos_token_id=tokenizer.eos_token_id,
-                max_new_tokens=1000,
-                temperature=0.7,
-                top_p=0.9,
-            )
-
-        for hook in hooks:
-            hook.remove()
-
-        input_token_length = tokens.input_ids.shape[1]
-        generated_output_tokens = output_tokens[0][input_token_length:]
-        generated_text = tokenizer.decode(generated_output_tokens, skip_special_tokens=True)
-
-        # Concatenate activation tensors for each layer and component
-        for key in activations.keys():
-            activations[key] = torch.cat([tensor.squeeze(0) for tensor in activations[key]], dim=0)
-
-        # Set up visualization
+    def visualize_activations(self, mlp_projections: torch.Tensor, self_attn_projections: torch.Tensor, activations: Dict[str, torch.Tensor], tokenizer, output_tokens):
+        self.is_activation_visualization = True
         initial_layer, initial_token = 0, 0
+        n_layers = mlp_projections.shape[0]
 
-        # Create figure with adjusted size and layout
-        fig = plt.figure(figsize=(16, 10))
+        self.mlp_values = mlp_projections.float().cpu().numpy()
+        self.self_attn_values = self_attn_projections.float().cpu().numpy()
+        self.mlp_activation_tensor, self.self_attn_activation_tensor = self._collect_activations_into_tensors(activations)
 
-        # Adjust the overall layout to leave space for controls and text
-        plt.subplots_adjust(left=0.05, right=0.95, top=0.90, bottom=0.20)
+        self.tokenizer = tokenizer
+        self.output_tokens = output_tokens
 
-        # Create subplots
-        ax_mlp = fig.add_subplot(121, projection="3d")
-        ax_mlp.set_title("MLP Projection")
-        ax_self_attn = fig.add_subplot(122, projection="3d")
-        ax_self_attn.set_title("Self Attention Projection")
+        mlp_activations = self.mlp_activation_tensor[initial_layer]
+        self_attn_activations = self.self_attn_activation_tensor[initial_layer]
 
-        # Setup initial visualizations with activations
-        scatter_mlp = Visualizer._setup_activation_plot(model.hf_model.model.layers[initial_layer].mlp.neuron_projections, activations[f"{initial_layer}_mlp"][initial_token], ax_mlp)
-
-        scatter_self_attn = Visualizer._setup_activation_plot(
-            model.hf_model.model.layers[initial_layer].self_attn.neuron_projections, activations[f"{initial_layer}_self_attn"][initial_token], ax_self_attn
+        self.help_text = QLabel(
+            "For the 3D scatter plots, size of the point is based on absolute value of the activation, and color is based on sign. For example, values near zero will be small points with neutral color, large values will be large green points, and large negative values will be large red points."
         )
+        self.layout.addWidget(self.help_text)
 
-        # Set consistent limits for axes
-        Visualizer._set_axis_limits([ax_mlp, ax_self_attn])
-
-        # Create more compact slider controls
-        slider_height = 0.02
-        slider_spacing = 0.03
-        slider_width = 0.70
-        slider_left = 0.15
-        slider_bottom_start = 0.10
-
-        # Layer slider - positioned higher
-        ax_layer = plt.axes((slider_left, slider_bottom_start + slider_spacing, slider_width, slider_height))
-        layer_slider = Slider(ax=ax_layer, label="Layer", valmin=0, valmax=len(model.hf_model.model.layers) - 1, valinit=initial_layer, valstep=1, valfmt="%d")
-
-        # Token slider - positioned just below layer slider
-        ax_token = plt.axes((slider_left, slider_bottom_start, slider_width, slider_height))
-        token_slider = Slider(ax=ax_token, label="Token", valmin=0, valmax=generated_output_tokens.shape[0] - 1, valinit=initial_token, valstep=1, valfmt="%d")
-
-        # Add text display for the output - position at bottom left with proper size
-        text_output_ax = plt.axes((0.05, 0.01, 0.90, 0.15))
-        text_output_ax.axis("off")
-
-        full_text = tokenizer.decode(output_tokens[0], skip_special_tokens=True)
-
-        # Create text display with appropriate wrapping and alignment
-        text_output = text_output_ax.text(
-            0,
-            1.0,  # Position at top-left of the text area
-            full_text,
-            ha="left",
-            va="top",
-            wrap=True,
-            fontsize=9,
-            transform=text_output_ax.transAxes,
+        self.mpl_canvas = MplCanvas(
+            mlp_values=self._demean(self.mlp_values[initial_layer]),
+            self_attn_values=self._demean(self.self_attn_values[initial_layer]),
+            mlp_sizes=self._convert_to_sizes(mlp_activations[initial_token]),
+            self_attn_sizes=self._convert_to_sizes(self_attn_activations[initial_token]),
+            mlp_colors=self._convert_to_color(mlp_activations[initial_token]),
+            self_attn_colors=self._convert_to_color(self_attn_activations[initial_token]),
         )
+        self.mpl_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.mpl_canvas.setMinimumHeight(500)
+        self.layout.addWidget(self.mpl_canvas)
 
-        # Define update function for sliders
-        def update(_):
-            layer_index = int(layer_slider.val)
-            token_index = int(token_slider.val)
+        self.layer_slider_layout = QHBoxLayout()
+        self.layer_label = QLabel("Layer: 0")
+        self.layer_slider = QSlider(Qt.Orientation.Horizontal)
+        self.layer_slider.setMinimum(0)
+        self.layer_slider.setMaximum(n_layers - 1)
+        self.layer_slider.setValue(initial_layer)
+        self.layer_slider_layout.addWidget(self.layer_label)
+        self.layer_slider_layout.addWidget(self.layer_slider)
+        self.layout.addLayout(self.layer_slider_layout)
 
-            # Update MLP visualization
-            Visualizer._update_activation_plot(scatter_mlp, model.hf_model.model.layers[layer_index].mlp.neuron_projections, activations[f"{layer_index}_mlp"][input_token_length + token_index - 1])
+        self.activation_slider_layout = QHBoxLayout()
+        self.activation_label = QLabel("Activation: 0")
+        self.activation_slider = QSlider(Qt.Orientation.Horizontal)
+        self.activation_slider.setMinimum(0)
+        self.activation_slider.setMaximum(output_tokens.shape[0] - 1)
+        self.activation_slider.setValue(initial_token)
+        self.activation_slider_layout.addWidget(self.activation_label)
+        self.activation_slider_layout.addWidget(self.activation_slider)
+        self.layout.addLayout(self.activation_slider_layout)
 
-            # Update Self-Attention visualization
-            Visualizer._update_activation_plot(
-                scatter_self_attn, model.hf_model.model.layers[layer_index].self_attn.neuron_projections, activations[f"{layer_index}_self_attn"][input_token_length + token_index - 1]
+        self.layer_slider.valueChanged.connect(self._on_slider_change)
+        self.activation_slider.valueChanged.connect(self._on_slider_change)
+
+        self.output_text_area = QTextEdit()
+        self.output_text_area.setFontPointSize(18.0)
+        self.output_text_area.setReadOnly(True)
+        self.output_text_area.setText(tokenizer.decode(output_tokens, skip_special_tokens=True))
+        self.layout.addWidget(self.output_text_area)
+
+        self._compute_token_boundaries()
+        self._highlight_current_token(initial_token)
+
+        self.layout.setStretchFactor(self.help_text, 1)
+        self.layout.setStretchFactor(self.mpl_canvas, 10)
+        self.layout.setStretchFactor(self.output_text_area, 2)
+
+        self.show()
+
+    def _on_slider_change(self):
+        if self.is_activation_visualization:
+            layer_index = self.layer_slider.value()
+            activation_index = self.activation_slider.value()
+
+            self.layer_label.setText(f"Layer: {layer_index}")
+            self.activation_label.setText(f"Activation: {activation_index}")
+
+            mlp_activations = self.mlp_activation_tensor[layer_index]
+            self_attn_activations = self.self_attn_activation_tensor[layer_index]
+
+            self.mpl_canvas.update_data(
+                mlp_values=self._demean(self.mlp_values[layer_index]),
+                self_attn_values=self._demean(self.self_attn_values[layer_index]),
+                mlp_sizes=self._convert_to_sizes(mlp_activations[activation_index]),
+                self_attn_sizes=self._convert_to_sizes(self_attn_activations[activation_index]),
+                mlp_colors=self._convert_to_color(mlp_activations[activation_index]),
+                self_attn_colors=self._convert_to_color(self_attn_activations[activation_index]),
             )
 
-            # Get current token info
-            all_tokens = tokenizer.convert_ids_to_tokens(generated_output_tokens)
-            current_token = all_tokens[token_index] if token_index < len(all_tokens) else ""
+            # Highlight the current token in the text box
+            self._highlight_current_token(activation_index)
+        else:
+            layer_index = self.layer_slider.value()
+            self.layer_label.setText(f"Layer: {layer_index}")
+            self.mpl_canvas.update_data(
+                mlp_values=self._demean(self.mlp_values[layer_index]),
+                self_attn_values=self._demean(self.self_attn_values[layer_index]),
+            )
 
-            # Update text with clear formatting and no overlap
-            formatted_text = f"Current token: '{current_token}'\n\nFull text: {full_text}"
-            text_output.set_text(formatted_text)
-            text_output.set_wrap(True)
+    def _highlight_current_token(self, token_index):
+        # Get the text and tokenizer from the visualization
+        text = self.output_text_area.toPlainText()
 
-            fig.canvas.draw_idle()
+        if not hasattr(self, "tokenized_text_indices"):
+            # First time - we need to compute the token boundaries
+            self._compute_token_boundaries()
 
-        # Connect sliders to update function
-        layer_slider.on_changed(update)
-        token_slider.on_changed(update)
+        # Reset any previous formatting
+        cursor = self.output_text_area.textCursor()
+        cursor.select(cursor.SelectionType.Document)
+        format = cursor.charFormat()
+        format.setFontUnderline(False)
+        format.setBackground(Qt.GlobalColor.transparent)
+        cursor.setCharFormat(format)
+        cursor.clearSelection()
 
-        plt.show()
+        # Apply new highlight if we have valid indices
+        if token_index < len(self.tokenized_text_indices) and token_index >= 0:
+            start_pos, end_pos = self.tokenized_text_indices[token_index]
+
+            cursor.setPosition(start_pos)
+            cursor.setPosition(end_pos, cursor.MoveMode.KeepAnchor)
+
+            highlight_format = cursor.charFormat()
+            highlight_format.setFontUnderline(True)
+            highlight_format.setBackground(Qt.GlobalColor.yellow)
+            cursor.setCharFormat(highlight_format)
+
+    # Add a method to compute token boundaries in the text
+    def _compute_token_boundaries(self):
+        text = self.output_text_area.toPlainText()
+
+        # We need to determine where each token starts and ends in the text
+        # This is a simplified approach, you'll need to adapt it based on how your
+        # tokenizer actually works
+        self.tokenized_text_indices = []
+
+        # Assuming output_tokens is available and contains the token IDs
+        token_strings = []
+        for token_id in self.output_tokens:
+            token_string = self.tokenizer.decode([token_id], skip_special_tokens=True)
+            token_strings.append(token_string)
+
+        # Find positions of each token in the full text
+        pos = 0
+        for token_string in token_strings:
+            if token_string:  # Skip empty tokens
+                # Find the token in the text starting from the current position
+                start_pos = text.find(token_string, pos)
+                if start_pos != -1:
+                    end_pos = start_pos + len(token_string)
+                    self.tokenized_text_indices.append((start_pos, end_pos))
+                    pos = end_pos
+                else:
+                    # If token not found, use the previous end as start and add estimated length
+                    # This is a fallback and not ideal
+                    estimated_start = pos
+                    estimated_end = estimated_start + max(1, len(token_string))
+                    self.tokenized_text_indices.append((estimated_start, estimated_end))
+                    pos = estimated_end
+
+    def _convert_to_sizes(self, x: np.array) -> np.array:
+        tmp = np.abs(x)
+        if np.min(tmp) == np.max(tmp):
+            return np.zeros_like(tmp, dtype=np.float32)
+        else:
+            return 20 * (tmp - np.min(tmp)) / (np.max(tmp) - np.min(tmp)) + 1.5
+
+    def _convert_to_color(self, x: np.array) -> np.array:
+        if np.max(x) == np.min(x):
+            return np.array([[0.5, 0.5, 0.5, 1.0]] * len(x))
+
+        normalized_x = (x - np.min(x)) / (np.max(x) - np.min(x))
+        colormap = matplotlib.colormaps.get_cmap("PiYG")
+        return colormap(normalized_x)
+
+    def _demean(self, x: np.array) -> np.array:
+        return x - x.mean(axis=0)
+
+    def _collect_activations_into_tensors(self, activations: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        layer_numbers = [int(key.split("_")[0]) for key in activations.keys()]
+        n_layers = max(layer_numbers) + 1
+
+        mlp_tensors = torch.zeros((n_layers, *activations["0_mlp"].shape))
+        self_attn_tensors = torch.zeros((n_layers, *activations["0_self_attn"].shape))
+
+        for key, tensor in activations.items():
+            layer_number = int(key.split("_")[0])
+            module_type = key.split("_")[1]
+
+            if module_type == "mlp":
+                mlp_tensors[layer_number] = tensor
+            else:
+                self_attn_tensors[layer_number] = tensor
+
+        return mlp_tensors.float().cpu().numpy(), self_attn_tensors.float().cpu().numpy()
 
     @staticmethod
     def _register_activation_hooks(model: DeepReorderModel, activations: Dict[str, List]) -> List[torch.utils.hooks.RemovableHandle]:
@@ -206,62 +335,6 @@ class Visualizer:
                 hook = layer.__getattr__(component).register_forward_hook(_generate_hook(f"{layer_idx}_{component}"))
                 hooks.append(hook)
         return hooks
-
-    @staticmethod
-    def _setup_projection_plot(projections: torch.Tensor, ax: plt.Axes, color: str) -> Tuple[np.ndarray, Any]:
-        """Setup a 3D scatter plot of neuron projections."""
-        projection_data = projections.cpu().numpy()
-        projection_data = projection_data - projection_data.mean(axis=0)
-        scatter = ax.scatter(projection_data[:, 0], projection_data[:, 1], projection_data[:, 2], s=10, c=color)
-        return projection_data, scatter
-
-    @staticmethod
-    def _setup_activation_plot(projections: torch.Tensor, activations: torch.Tensor, ax: plt.Axes) -> Any:
-        """Setup a 3D scatter plot with activation data."""
-        projection_data = projections.float().cpu().numpy()
-        projection_data = projection_data - projection_data.mean(axis=0)
-
-        # Get sizes and colors based on activations
-        sizes, activation_values = Visualizer._generate_sizes_and_colors(activations.float().cpu().numpy())
-        colors = plt.cm.coolwarm(activation_values)
-
-        scatter = ax.scatter(projection_data[:, 0], projection_data[:, 1], projection_data[:, 2], s=sizes, c=colors)
-        return scatter
-
-    @staticmethod
-    def _update_activation_plot(scatter: Any, projections: torch.Tensor, activations: torch.Tensor) -> None:
-        """Update an existing 3D scatter plot with new data."""
-        projection_data = projections.float().cpu().numpy()
-        projection_data = projection_data - projection_data.mean(axis=0)
-        scatter._offsets3d = (projection_data[:, 0], projection_data[:, 1], projection_data[:, 2])
-
-        # Update sizes and colors based on activations
-        sizes, activation_values = Visualizer._generate_sizes_and_colors(activations.float().cpu().numpy())
-        colors = plt.cm.coolwarm(activation_values)
-        scatter.set_sizes(sizes)
-        scatter.set_facecolors(colors)
-
-    @staticmethod
-    def _generate_sizes_and_colors(activations: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """Generate point sizes and color values based on activations."""
-        mean_activation = np.mean(activations)
-        std_activation = np.std(activations)
-
-        if std_activation == 0:
-            normalized_activations = np.zeros_like(activations)
-        else:
-            normalized_activations = (activations - mean_activation) / std_activation
-
-        sizes = np.abs(normalized_activations) + 0.1
-        return sizes, normalized_activations
-
-    @staticmethod
-    def _set_axis_limits(axes: List[plt.Axes], limit: float = 1.5) -> None:
-        """Set consistent limits for 3D axes."""
-        for ax in axes:
-            ax.set_xlim([-limit, limit])
-            ax.set_ylim([-limit, limit])
-            ax.set_zlim([-limit, limit])
 
 
 class MessageConstructor:
@@ -478,7 +551,12 @@ class DeepReorderApp(QWidget):
             return
 
         try:
-            Visualizer.visualize_model(self.loaded_model)
+            n_layers = len(self.loaded_model.hf_model.model.layers)
+            mlp_projections = torch.stack([self.loaded_model.hf_model.model.layers[layer_idx].mlp.neuron_projections for layer_idx in range(n_layers)])
+            self_attn_projections = torch.stack([self.loaded_model.hf_model.model.layers[layer_idx].self_attn.neuron_projections for layer_idx in range(n_layers)])
+            self.visualizer = NewVisualizer()
+            self.visualizer.visualize(mlp_projections, self_attn_projections)
+            self.visualizer.show()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to visualize model:\n{e}")
 
@@ -488,22 +566,55 @@ class DeepReorderApp(QWidget):
             QMessageBox.warning(self, "Warning", "Model not loaded. Please load a model first.")
             return
 
-        # Get input values
         system_prompt = self.system_prompt_text_box.text()
         instruction = self.instruction_text_box.toPlainText()
         content = self.content_text_box.toPlainText()
-
         if not instruction:
             QMessageBox.warning(self, "Warning", "Instruction cannot be empty.")
             return
-
-        # Prepare messages and tokenize
         constructed_message = MessageConstructor.construct_messages(instruction, content, system_prompt)
 
         tokenized_inputs = self._tokenize_input_messages(constructed_message)
+        tokenized_inputs.to(self.loaded_model.hf_model.device)
+
+        activations = defaultdict(list)
+        hooks = NewVisualizer._register_activation_hooks(self.loaded_model, activations)
+
+        with torch.no_grad():
+            output_tokens = self.loaded_model.hf_model.generate(
+                tokenized_inputs.input_ids,
+                attention_mask=tokenized_inputs.attention_mask,
+                do_sample=True,
+                pad_token_id=self.loaded_tokenizer.pad_token_id,
+                eos_token_id=self.loaded_tokenizer.eos_token_id,
+                max_new_tokens=750,
+                temperature=0.7,
+                top_p=0.9,
+            )
+
+        for hook in hooks:
+            hook.remove()
+
+        for key in activations.keys():
+            activations[key] = torch.cat([tensor.squeeze(0) for tensor in activations[key]], dim=0)
+
+        n_layers = len(self.loaded_model.hf_model.model.layers)
+        mlp_projections = torch.stack([self.loaded_model.hf_model.model.layers[layer_idx].mlp.neuron_projections for layer_idx in range(n_layers)])
+        self_attn_projections = torch.stack([self.loaded_model.hf_model.model.layers[layer_idx].self_attn.neuron_projections for layer_idx in range(n_layers)])
+
+        input_token_length = tokenized_inputs.input_ids.shape[1]
+        generated_output_tokens = output_tokens[0][input_token_length:]
 
         # Visualize with inference
-        Visualizer.visualize_inference(self.loaded_model, self.loaded_tokenizer, tokenized_inputs)
+        self.interactive_visualization = NewVisualizer()
+        self.interactive_visualization.visualize_activations(
+            mlp_projections=mlp_projections,
+            self_attn_projections=self_attn_projections,
+            activations=activations,
+            tokenizer=self.loaded_tokenizer,
+            output_tokens=generated_output_tokens,
+        )
+        self.interactive_visualization.show()
 
     def _tokenize_input_messages(self, messages: List[List[Dict[str, str]]]) -> BatchEncoding:
         """Tokenize input messages for the model."""
